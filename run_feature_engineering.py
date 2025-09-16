@@ -2,24 +2,7 @@ import pandas as pd
 import os
 from feature_engineering import generate_all_features
 from labeling import get_triple_barrier_labels
-from storage import save_to_parquet
-
-def load_data(file_path: str) -> pd.DataFrame:
-    """
-    Loads data from a Parquet file, handling potential errors.
-    """
-    if not os.path.exists(file_path):
-        print(f"Error: Data file not found at '{file_path}'. Please ensure Phase 1 was completed successfully.")
-        return pd.DataFrame()
-
-    try:
-        print(f"Loading data from '{file_path}'...")
-        df = pd.read_parquet(file_path)
-        print("Data loaded successfully.")
-        return df
-    except Exception as e:
-        print(f"An error occurred while loading the Parquet file: {e}")
-        return pd.DataFrame()
+from storage import save_to_parquet, load_data
 
 def main():
     """
@@ -28,7 +11,7 @@ def main():
     print("--- Starting Phase 2: Feature Engineering & Labeling ---")
 
     # Define paths
-    input_file = os.path.join('data', 'xbtusd_1h.parquet')
+    input_file = os.path.join('data', 'xbtusd_2h.parquet')
     output_file = os.path.join('data', 'featured_labeled_data.parquet')
 
     # Load the raw data from Phase 1
@@ -53,7 +36,8 @@ def main():
         tp_multiplier=2.0, # Take profit at 2x ATR
         sl_multiplier=1.5  # Stop loss at 1.5x ATR
     )
-    labels.name = 'label'
+    # The result from labeling is a DataFrame now
+    labels.rename(columns={'label': 'label', 'touch_time': 'touch_time'}, inplace=True)
 
     # --- 3. Align Features and Labels ---
     print("\n--- Aligning Features and Labels ---")

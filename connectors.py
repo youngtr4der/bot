@@ -80,19 +80,23 @@ class KrakenConnector:
     """
     BASE_URL = "https://api.kraken.com/0/public/"
 
-    def fetch_ohlcv(self, pair: str, interval: int = 60) -> pd.DataFrame:
+    def fetch_ohlcv(self, pair: str, interval: int = 60, since: int = None) -> (pd.DataFrame, int):
         """
         Fetches historical OHLCV data for a specific pair from Kraken.
 
         :param pair: The trading pair (e.g., 'XBTUSD').
-        :param interval: The candle interval in minutes. Valid values: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600.
-        :return: A pandas DataFrame with OHLCV data, indexed by datetime. Returns an empty DataFrame on error.
+        :param interval: The candle interval in minutes.
+        :param since: Return data since given timestamp ID.
+        :return: A tuple containing (DataFrame with OHLCV data, last_timestamp_id).
+                 Returns (empty DataFrame, None) on error.
         """
         endpoint = f"{self.BASE_URL}OHLC"
         params = {
             'pair': pair.upper(),
             'interval': interval,
         }
+        if since:
+            params['since'] = since
 
         try:
             response = requests.get(endpoint, params=params)
@@ -101,23 +105,23 @@ class KrakenConnector:
 
             if data.get('error'):
                 print(f"Kraken API error: {data['error']}")
-                return pd.DataFrame()
+                return pd.DataFrame(), None
 
-            # The result is a dict where the key is the pair name. We need to find it.
-            result_key = next((k for k in data.get('result', {}) if k != 'last'), None)
+            result = data.get('result', {})
+            last_timestamp = result.get('last')
+            result_key = next((k for k in result if k != 'last'), None)
+
             if not result_key:
                 print("Could not find pair data in Kraken response.")
-                return pd.DataFrame()
+                return pd.DataFrame(), None
 
-            raw_ohlc = data['result'][result_key]
-
+            raw_ohlc = result[result_key]
             df = pd.DataFrame(raw_ohlc, columns=[
                 'open_time', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'
             ])
 
             # Select and convert data types
             df = df[['open_time', 'open', 'high', 'low', 'close', 'volume']].copy()
-            # Kraken provides timestamps in seconds
             df['open_time'] = pd.to_datetime(df['open_time'], unit='s')
             df.set_index('open_time', inplace=True)
 
@@ -126,11 +130,11 @@ class KrakenConnector:
 
             df.dropna(inplace=True)
 
-            return df
+            return df, last_timestamp
 
         except requests.exceptions.RequestException as e:
             print(f"Error fetching data from Kraken: {e}")
-            return pd.DataFrame()
+            return pd.DataFrame(), None
         except (KeyError, IndexError, TypeError) as e:
             print(f"Error parsing Kraken API response: {e}. Response was: {data}")
-            return pd.DataFrame()
+            return pd.DataFrame(), None

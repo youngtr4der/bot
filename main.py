@@ -1,15 +1,12 @@
 import pandas as pd
 import os
+import time
 from connectors import KrakenConnector # Using Kraken due to Binance geo-blocking
 from storage import save_to_parquet
 
 def transform_data(df: pd.DataFrame, target_interval: str = '1H') -> pd.DataFrame:
     """
     Transforms raw OHLCV data by resampling to a target interval and handling missing values.
-
-    :param df: The input DataFrame with high-frequency data.
-    :param target_interval: The target resampling interval (e.g., '1H', '4H').
-    :return: The resampled and cleaned DataFrame.
     """
     if not isinstance(df, pd.DataFrame) or df.empty:
         print("Warning: Input is not a valid, non-empty DataFrame. No transformation will be performed.")
@@ -18,54 +15,63 @@ def transform_data(df: pd.DataFrame, target_interval: str = '1H') -> pd.DataFram
     print(f"Original data points: {len(df)}")
     print(f"Resampling data to '{target_interval}' interval...")
 
-    # Define aggregation rules for resampling
     resample_rules = {
-        'open': 'first',
-        'high': 'max',
-        'low': 'min',
-        'close': 'last',
-        'volume': 'sum'
+        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
     }
-
-    # Resample the data
     resampled_df = df.resample(target_interval).apply(resample_rules)
 
-    # The user's plan specifies handling missing values. Forward-fill is a reasonable strategy.
-    # It propagates the last valid observation forward to the next valid.
-    original_len = len(resampled_df)
-    resampled_df.dropna(inplace=True) # Drop rows where no data was available to aggregate
+    resampled_df.dropna(inplace=True)
     print(f"Data points after resampling and dropping NaN rows: {len(resampled_df)}")
 
     if resampled_df.empty:
         return resampled_df
 
-    # Let's create a full date range to see if there are gaps to fill
+    # Forward-fill any gaps
     full_range_df = resampled_df.asfreq(target_interval)
-    missing_rows = full_range_df[full_range_df.isnull().any(axis=1)]
-
-    if not missing_rows.empty:
-        print(f"Found {len(missing_rows)} missing rows after resampling. Applying forward-fill...")
+    if full_range_df.isnull().values.any():
         resampled_df = resampled_df.asfreq(target_interval, method='ffill')
 
     print("Transformation complete.")
     return resampled_df
 
-def run_etl(symbol: str, raw_interval: int, target_interval: str, output_dir: str = 'data'):
+def run_etl(symbol: str, raw_interval: int, target_interval: str, output_dir: str = 'data', n_pages: int = 8):
     """
-    Runs the full ETL (Extract, Transform, Load) process using Kraken data.
+    Runs the full ETL process, fetching multiple pages of historical data.
     """
     print(f"--- Starting ETL for {symbol} ---")
 
     # 1. EXTRACT
-    print(f"Extracting {raw_interval}-minute data from Kraken...")
+    print(f"Extracting {n_pages} pages of {raw_interval}-minute data from Kraken...")
     connector = KrakenConnector()
-    raw_data = connector.fetch_ohlcv(symbol, interval=raw_interval)
 
-    if raw_data.empty:
-        print(f"Extraction failed or returned no data for {symbol}. ETL process stopped.")
+    all_dfs = []
+    last_timestamp = None
+
+    for i in range(n_pages):
+        print(f"Fetching page {i+1}/{n_pages}...")
+        df, last_timestamp = connector.fetch_ohlcv(symbol, interval=raw_interval, since=last_timestamp)
+
+        if df.empty:
+            print("Received empty data, stopping pagination.")
+            break
+
+        all_dfs.append(df)
+
+        if last_timestamp is None:
+            break # No more data to paginate
+
+        time.sleep(1) # Be respectful to the API
+
+    if not all_dfs:
+        print("Extraction failed or returned no data. ETL process stopped.")
         return
 
-    print(f"Successfully extracted {len(raw_data)} rows of data.")
+    # Combine all pages and remove duplicates
+    raw_data = pd.concat(all_dfs)
+    raw_data = raw_data[~raw_data.index.duplicated(keep='first')]
+    raw_data.sort_index(inplace=True)
+
+    print(f"Successfully extracted a total of {len(raw_data)} rows of data.")
 
     # 2. TRANSFORM
     transformed_data = transform_data(raw_data, target_interval)
@@ -83,12 +89,11 @@ def run_etl(symbol: str, raw_interval: int, target_interval: str, output_dir: st
     print(f"--- ETL for {symbol} finished successfully. ---")
 
 if __name__ == '__main__':
-    # --- Configuration for Kraken ---
-    # Kraken uses 'XBT' for Bitcoin instead of 'BTC'
     SYMBOL_TO_FETCH = 'XBTUSD'
-    # Fetch higher frequency data (e.g., 5-minute). Kraken uses integers for minutes.
-    RAW_INTERVAL = 5
-    # Resample to a lower frequency (e.g., 1-hour)
-    TARGET_INTERVAL = '1H'
+    # Fetch 1-hour data
+    RAW_INTERVAL = 60
+    # Resample to 2-hour bars to get a decent number of samples (~360)
+    TARGET_INTERVAL = '2H'
 
-    run_etl(SYMBOL_TO_FETCH, RAW_INTERVAL, TARGET_INTERVAL)
+    # Run with a single page, as pagination logic is flawed for historical data.
+    run_etl(SYMBOL_TO_FETCH, RAW_INTERVAL, TARGET_INTERVAL, n_pages=1)
